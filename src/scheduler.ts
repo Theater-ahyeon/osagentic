@@ -31,6 +31,14 @@ function qosOrder(a: Irq, b: Irq, deadlineOf: (irq: Irq) => number): number {
   return 0;
 }
 
+const SCHEDULER_PENDING_KEY = 'attention-scheduler:pending';
+
+// 待决队列持久化形状：重启后恢复上半部与下半部中断
+interface PendingState {
+  top: Irq[];
+  bottom: Irq[];
+}
+
 // QoS 调度器：上半部立即送达且永不节流；下半部按预算闸门送达，耗尽时节流、窗口滚动后补发
 export class BudgetQoSScheduler implements Scheduler {
   private readonly top: Irq[] = [];
@@ -48,6 +56,15 @@ export class BudgetQoSScheduler implements Scheduler {
       (recipient) => this.config.recipients?.[recipient] ?? this.config,
       () => this.config.teams ?? {},
     );
+    // 重启恢复：加载待决队列；PauseState 不持久化，恢复的中断以当前暂停时长为顺延基线
+    const saved = deps.persistence.load<PendingState>(SCHEDULER_PENDING_KEY);
+    if (saved) {
+      this.top.push(...saved.top);
+      this.bottom.push(...saved.bottom);
+      for (const irq of this.bottom) {
+        if (irq.deadline !== undefined) this.pauseBaselines.set(irq.id, deps.pause.pausedMs());
+      }
+    }
   }
 
   // 策略版本化生效：替换配额与团队配置；待决中断在下一次调度按新策略
@@ -63,10 +80,15 @@ export class BudgetQoSScheduler implements Scheduler {
   submit(irq: Irq): void {
     if (irq.half === 'top') {
       this.top.push(irq);
-      return;
+    } else {
+      if (irq.deadline !== undefined) this.pauseBaselines.set(irq.id, this.deps.pause.pausedMs());
+      this.bottom.push(irq);
     }
-    if (irq.deadline !== undefined) this.pauseBaselines.set(irq.id, this.deps.pause.pausedMs());
-    this.bottom.push(irq);
+    this.persistState();
+  }
+
+  private persistState(): void {
+    this.deps.persistence.save(SCHEDULER_PENDING_KEY, { top: this.top, bottom: this.bottom });
   }
 
   // 有效截止时间 = 原始截止时间 + 提交之后经历的暂停时长
@@ -101,6 +123,7 @@ export class BudgetQoSScheduler implements Scheduler {
     }
     this.bottom.length = 0;
     this.bottom.push(...throttled);
+    this.persistState();
     return messages;
   }
 }

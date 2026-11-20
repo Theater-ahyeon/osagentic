@@ -1,4 +1,4 @@
-import type { Scheduler } from './ports.js';
+import type { Persistence, Scheduler } from './ports.js';
 import type { Irq, Message } from './domain.js';
 import { nextId } from './domain.js';
 
@@ -20,6 +20,14 @@ interface Group {
 const DEFAULT_WINDOW_MS = 1000;
 const DEFAULT_MAX_WINDOW_MS = 8000;
 const DEFAULT_GROWTH_MS = 250;
+const COALESCE_GROUPS_KEY = 'attention-coalesce:groups';
+
+// 合并组持久化形状：重启后恢复缓冲中的摘要组与 irq 主题映射
+interface CoalesceState {
+  groups: [string, Group][];
+  irqTopics: [string, string][];
+  pending: number;
+}
 
 // 合并调度器：包裹内层调度器，下半部消息按接收人+会话+主题在时间窗内聚合为一条摘要；
 // 上半部 attention 立即透传；预算与 QoS 排序仍由内层调度器负责
@@ -36,15 +44,32 @@ export class CoalescingScheduler implements Scheduler {
   constructor(
     private readonly inner: Scheduler,
     config: CoalesceConfig = {},
+    private readonly persistence?: Persistence,
   ) {
     this.windowMs = config.windowMs ?? DEFAULT_WINDOW_MS;
     this.maxWindowMs = config.maxWindowMs ?? DEFAULT_MAX_WINDOW_MS;
     this.growthMs = config.growthMs ?? DEFAULT_GROWTH_MS;
+    // 重启恢复：加载缓冲中的合并组，窗口中途重启不丢失成员
+    const saved = this.persistence?.load<CoalesceState>(COALESCE_GROUPS_KEY);
+    if (saved) {
+      for (const [key, group] of saved.groups) this.groups.set(key, group);
+      for (const [id, topic] of saved.irqTopics) this.irqTopics.set(id, topic);
+      this.pending = saved.pending;
+    }
+  }
+
+  private persistState(): void {
+    this.persistence?.save(COALESCE_GROUPS_KEY, {
+      groups: Array.from(this.groups.entries()),
+      irqTopics: Array.from(this.irqTopics.entries()),
+      pending: this.pending,
+    });
   }
 
   submit(irq: Irq): void {
     this.irqTopics.set(irq.id, irq.topic);
     this.inner.submit(irq);
+    this.persistState();
   }
 
   due(now: number): Message[] {
@@ -69,7 +94,9 @@ export class CoalescingScheduler implements Scheduler {
     }
     expired.sort((a, b) => a.deadline - b.deadline || a.firstAt - b.firstAt);
     this.pending -= expired.reduce((count, group) => count + group.members.length, 0);
-    return [...immediate, ...expired.map((group) => this.summarize(group, now))];
+    const summaries = expired.map((group) => this.summarize(group, now));
+    this.persistState();
+    return [...immediate, ...summaries];
   }
 
   private buffer(message: Message, topic: string, now: number): void {

@@ -272,9 +272,11 @@ describe('BudgetQoSScheduler 注意力预算（Source/Channel 边界）', () => 
     h2.report(progress('b2', { recipient: 'bob' }));
     expect(h2.channel.sent()).toHaveLength(0);
 
-    // 团队配额已被 a1 消耗：b2 仍被节流，窗口滚动后补发
+    // 团队配额已被 a1 消耗：b2 仍被节流；重启恢复的 b1 在窗口滚动后先补发
     h2.advance(1000);
-    expect(h2.channel.sent().map((m) => m.ticketId)).toEqual(['b2']);
+    expect(h2.channel.sent().map((m) => m.ticketId)).toEqual(['b1']);
+    h2.advance(1000);
+    expect(h2.channel.sent().map((m) => m.ticketId)).toEqual(['b1', 'b2']);
   });
 
   it('未加入团队的接收人不受团队配额影响', () => {

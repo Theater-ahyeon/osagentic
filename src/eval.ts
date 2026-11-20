@@ -100,7 +100,7 @@ export function attentionScheduler(
 ): Scheduler {
   return new ObservabilityScheduler(
     { persistence: deps.persistence },
-    new CoalescingScheduler(new BudgetQoSScheduler(deps, config.budget), config.coalesce),
+    new CoalescingScheduler(new BudgetQoSScheduler(deps, config.budget), config.coalesce, deps.persistence),
   );
 }
 

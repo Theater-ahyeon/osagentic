@@ -16,7 +16,7 @@ function fullStackHarness() {
     scheduler: (d) =>
       new ObservabilityScheduler(
         d,
-        new CoalescingScheduler(new BudgetQoSScheduler(d, budget), { windowMs: 2000, growthMs: 0 }),
+        new CoalescingScheduler(new BudgetQoSScheduler(d, budget), { windowMs: 2000, growthMs: 0 }, d.persistence),
       ),
     metrics: (d) => new AttentionMetrics(d),
   });

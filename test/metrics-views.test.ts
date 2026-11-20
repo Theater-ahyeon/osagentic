@@ -114,7 +114,7 @@ describe('队列深度与合并/节流计数（Source/Channel 边界）', () => 
     const config: BudgetQoSConfig = { windowMs: 60_000, maxInterrupts: 100, maxCost: 1000 };
     const h = createHarness({
       scheduler: (d) =>
-        new ObservabilityScheduler(d, new CoalescingScheduler(new BudgetQoSScheduler(d, config), { windowMs: 1000, growthMs: 0 })),
+        new ObservabilityScheduler(d, new CoalescingScheduler(new BudgetQoSScheduler(d, config), { windowMs: 1000, growthMs: 0 }, d.persistence)),
       metrics: (d) => new AttentionMetrics(d),
     });
     h.report(progress('t1', { topic: 'build' }));
