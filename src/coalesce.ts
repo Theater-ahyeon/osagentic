@@ -72,6 +72,10 @@ export class CoalescingScheduler implements Scheduler {
     this.persistState();
   }
 
+  bufferedIrqIds(): string[] {
+    return Array.from(this.groups.values()).flatMap((group) => group.members.flatMap((m) => m.irqIds));
+  }
+
   due(now: number): Message[] {
     const immediate: Message[] = [];
     for (const message of this.inner.due(now)) {

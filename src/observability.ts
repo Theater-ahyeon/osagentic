@@ -39,8 +39,10 @@ export class ObservabilityScheduler implements Scheduler {
         });
       }
     }
+    // 合并缓冲中的中断属于聚合延迟，不计入预算节流统计
+    const buffered = new Set(this.inner.bufferedIrqIds?.() ?? []);
     for (const irq of this.pending.values()) {
-      if (irq.half === 'bottom') this.throttledIrqs.add(irq.id);
+      if (irq.half === 'bottom' && !buffered.has(irq.id)) this.throttledIrqs.add(irq.id);
     }
     this.deps.persistence.save(OBS_COALESCED_KEY, this.coalesced);
     this.deps.persistence.save(OBS_THROTTLED_KEY, [...this.throttledIrqs]);

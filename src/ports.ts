@@ -20,6 +20,8 @@ export interface Persistence {
 export interface Scheduler {
   submit(irq: Irq): void;
   due(now: number): Message[];
+  // 缓冲中（尚未聚合送达）的成员中断身份；供可观测性区分合并缓冲与预算节流
+  bufferedIrqIds?(): string[];
 }
 
 export interface Outbox {
