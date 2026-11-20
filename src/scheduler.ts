@@ -2,11 +2,13 @@ import type { Persistence, Scheduler } from './ports.js';
 import type { Irq, Message, Recipient } from './domain.js';
 import { messageOf } from './domain.js';
 import type { PauseState } from './pause.js';
-import { AttentionBudget, type BudgetLimits } from './budget.js';
+import { AttentionBudget, type BudgetLimits, type TeamBudgetLimits } from './budget.js';
 
-// 默认配额作用于每个接收人；recipients 可为特定接收人指定独立配额
+// 默认配额作用于每个接收人；recipients 可为特定接收人指定独立配额；
+// teams 为团队聚合配额，成员共享团队窗口内的次数与成本上限
 export interface BudgetQoSConfig extends BudgetLimits {
   recipients?: Record<Recipient, BudgetLimits>;
+  teams?: Record<string, TeamBudgetLimits>;
 }
 
 export interface SchedulerDeps {
@@ -39,7 +41,11 @@ export class BudgetQoSScheduler implements Scheduler {
     private readonly deps: SchedulerDeps,
     config: BudgetQoSConfig,
   ) {
-    this.budget = new AttentionBudget(deps.persistence, (recipient) => config.recipients?.[recipient] ?? config);
+    this.budget = new AttentionBudget(
+      deps.persistence,
+      (recipient) => config.recipients?.[recipient] ?? config,
+      () => config.teams ?? {},
+    );
   }
 
   submit(irq: Irq): void {

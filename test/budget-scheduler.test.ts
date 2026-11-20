@@ -204,4 +204,83 @@ describe('BudgetQoSScheduler 注意力预算（Source/Channel 边界）', () => 
     h.resumeNow();
     expect(h.channel.sent().map((m) => m.ticketId)).toEqual(['x', 'z']);
   });
+
+  it('团队预算耗尽时节流下半部，即使个人预算仍有余量', () => {
+    const h = harnessWith({
+      windowMs: 1000,
+      maxInterrupts: 10,
+      maxCost: 100,
+      teams: { core: { windowMs: 1000, maxInterrupts: 1, maxCost: 100, members: ['alice', 'bob'] } },
+    });
+    h.report(progress('a1'));
+    h.report(progress('b1', { recipient: 'bob' }));
+    expect(h.channel.sent().map((m) => m.ticketId)).toEqual(['a1']);
+
+    h.advance(1000);
+    expect(h.channel.sent().map((m) => m.ticketId)).toEqual(['a1', 'b1']);
+  });
+
+  it('团队成本预算独立闸门：个人次数未超但团队成本耗尽仍节流', () => {
+    const h = harnessWith({
+      windowMs: 1000,
+      maxInterrupts: 10,
+      maxCost: 100,
+      teams: { core: { windowMs: 1000, maxInterrupts: 10, maxCost: 5, members: ['alice', 'bob'] } },
+    });
+    h.report(progress('a1', { cost: 3 }));
+    h.report(progress('b1', { recipient: 'bob', cost: 3 }));
+    expect(h.channel.sent().map((m) => m.ticketId)).toEqual(['a1']);
+
+    h.advance(1000);
+    expect(h.channel.sent().map((m) => m.ticketId)).toEqual(['a1', 'b1']);
+  });
+
+  it('团队预算耗尽时上半部紧急中断仍立即送达', () => {
+    const h = harnessWith({
+      windowMs: 1000,
+      maxInterrupts: 10,
+      maxCost: 100,
+      teams: { core: { windowMs: 1000, maxInterrupts: 1, maxCost: 100, members: ['alice', 'bob'] } },
+    });
+    h.report(progress('a1'));
+    h.report({ ticketId: 'urgent', kind: 'blocked', recipient: 'bob', channel: 'chat-1', at: 0 });
+    const sent = h.channel.sent();
+    expect(sent.map((m) => m.ticketId)).toEqual(['a1', 'urgent']);
+    expect(sent[1]!.purpose).toBe('attention');
+  });
+
+  it('团队账本持久化，重启后团队聚合配额保留', () => {
+    const config: BudgetQoSConfig = {
+      windowMs: 1000,
+      maxInterrupts: 10,
+      maxCost: 100,
+      teams: { core: { windowMs: 1000, maxInterrupts: 1, maxCost: 100, members: ['alice', 'bob'] } },
+    };
+    const h1 = harnessWith(config);
+    h1.report(progress('a1'));
+    h1.report(progress('b1', { recipient: 'bob' }));
+    expect(h1.channel.sent()).toHaveLength(1);
+
+    const h2 = restartWith(h1.persistence, config);
+    h2.report(progress('b2', { recipient: 'bob' }));
+    expect(h2.channel.sent()).toHaveLength(0);
+
+    // 团队配额已被 a1 消耗：b2 仍被节流，窗口滚动后补发
+    h2.advance(1000);
+    expect(h2.channel.sent().map((m) => m.ticketId)).toEqual(['b2']);
+  });
+
+  it('未加入团队的接收人不受团队配额影响', () => {
+    const h = harnessWith({
+      windowMs: 1000,
+      maxInterrupts: 10,
+      maxCost: 100,
+      teams: { core: { windowMs: 1000, maxInterrupts: 1, maxCost: 100, members: ['alice'] } },
+    });
+    h.report(progress('a1'));
+    h.report(progress('a2'));
+    h.report(progress('c1', { recipient: 'carol' }));
+    h.report(progress('c2', { recipient: 'carol' }));
+    expect(h.channel.sent().map((m) => m.ticketId)).toEqual(['a1', 'c1', 'c2']);
+  });
 });
