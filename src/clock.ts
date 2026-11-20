@@ -1,0 +1,27 @@
+import type { Clock } from './ports.js';
+
+export class SystemClock implements Clock {
+  now(): number {
+    return Date.now();
+  }
+}
+
+export class ManualClock implements Clock {
+  private current: number;
+
+  constructor(start = 0) {
+    this.current = start;
+  }
+
+  now(): number {
+    return this.current;
+  }
+
+  advance(ms: number): void {
+    this.current += ms;
+  }
+
+  set(ms: number): void {
+    this.current = ms;
+  }
+}
