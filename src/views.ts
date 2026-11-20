@@ -7,21 +7,13 @@ import {
   type RecipientMetrics,
 } from './metrics.js';
 import { OBS_QUEUE_DEPTH_KEY, OBS_COALESCED_KEY, OBS_THROTTLED_KEY } from './observability.js';
+import { BUDGET_LEDGER_KEY, windowUsage, type ChargeEntry } from './budget.js';
 
 // 成本/价值汇总
 export interface MetricsTotals {
   count: number;
   cost: number;
   value: number;
-}
-
-// 与 budget.ts 的账本存储键保持一致（T2 模块未导出该键）
-const BUDGET_LEDGER_KEY = 'attention-budget:ledger';
-
-// 账本计费记录，形状与 budget.ts 的 ChargeEntry 一致
-interface ChargeEntry {
-  at: number;
-  cost: number;
 }
 
 // 单个接收人的剩余注意力预算
@@ -76,24 +68,23 @@ export class AttentionViews {
     };
   }
 
-  // 从 T2 账本 + 配额配置计算每人剩余预算；窗口语义与 AttentionBudget.active 一致
+  // 从账本 + 配额配置计算每人剩余预算；窗口用量计算与预算闸门共用 windowUsage
   private budgetViews(now: number): BudgetView[] {
     const ledger = this.persistence.load<Record<Recipient, ChargeEntry[]>>(BUDGET_LEDGER_KEY) ?? {};
     const names = new Set([...Object.keys(ledger), ...Object.keys(this.config.recipients ?? {})]);
     const views: BudgetView[] = [];
     for (const recipient of [...names].sort()) {
       const limits = this.config.recipients?.[recipient] ?? this.config;
-      const entries = (ledger[recipient] ?? []).filter((e) => e.at > now - limits.windowMs);
-      const usedCost = entries.reduce((sum, e) => sum + e.cost, 0);
+      const usage = windowUsage(ledger[recipient] ?? [], limits, now);
       views.push({
         recipient,
         windowMs: limits.windowMs,
         maxInterrupts: limits.maxInterrupts,
         maxCost: limits.maxCost,
-        usedInterrupts: entries.length,
-        usedCost,
-        remainingInterrupts: Math.max(0, limits.maxInterrupts - entries.length),
-        remainingCost: Math.max(0, limits.maxCost - usedCost),
+        usedInterrupts: usage.usedInterrupts,
+        usedCost: usage.usedCost,
+        remainingInterrupts: Math.max(0, limits.maxInterrupts - usage.usedInterrupts),
+        remainingCost: Math.max(0, limits.maxCost - usage.usedCost),
       });
     }
     return views;
