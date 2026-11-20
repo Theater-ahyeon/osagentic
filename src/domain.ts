@@ -61,10 +61,9 @@ export interface DomainEvent {
   payload: unknown;
 }
 
+// blocked/failed 等待人工输入，恒为上半部：立即送达，不可节流、不可合并
 export function classify(report: Report): IrqHalf {
-  if ((report.kind === 'blocked' || report.kind === 'failed') && report.question !== undefined) {
-    return 'top';
-  }
+  if (report.kind === 'blocked' || report.kind === 'failed') return 'top';
   return 'bottom';
 }
 

@@ -77,6 +77,19 @@ describe('BudgetQoSScheduler 注意力预算（Source/Channel 边界）', () => 
     expect(h.channel.sent()).toHaveLength(2);
   });
 
+  it('无 question 的 blocked/failed 恒为上半部：预算耗尽也立即送达，不被节流', () => {
+    const h = harnessWith({ windowMs: 1000, maxInterrupts: 1, maxCost: 100 });
+    h.report(progress('t1'));
+    h.report({ ticketId: 'b', kind: 'blocked', recipient: 'alice', channel: 'chat-1', at: 0 });
+    h.report({ ticketId: 'f', kind: 'failed', recipient: 'alice', channel: 'chat-1', at: 0 });
+    const sent = h.channel.sent();
+    expect(sent.map((m) => m.ticketId)).toEqual(['t1', 'b', 'f']);
+    expect(sent.slice(1).map((m) => m.purpose)).toEqual(['attention', 'attention']);
+
+    h.report(progress('t2'));
+    expect(h.channel.sent()).toHaveLength(3);
+  });
+
   it('多接收人各自独立计费，一人耗尽不影响另一人', () => {
     const h = harnessWith({ windowMs: 1000, maxInterrupts: 1, maxCost: 100 });
     h.report(progress('a1'));

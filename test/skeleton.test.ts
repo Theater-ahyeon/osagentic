@@ -43,6 +43,22 @@ describe('attention IRQ boundary (walking skeleton)', () => {
     expect(byTicket.get('d')!.purpose).toBe('result');
   });
 
+  it('delivers a blocked report without question immediately as attention', () => {
+    const h = createHarness();
+    h.report(report({ question: undefined }));
+    const sent = h.channel.sent();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.purpose).toBe('attention');
+  });
+
+  it('delivers a failed report without question immediately as attention', () => {
+    const h = createHarness();
+    h.report(report({ kind: 'failed', question: undefined }));
+    const sent = h.channel.sent();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.purpose).toBe('attention');
+  });
+
   it('produces no interruption for waiting or dropped reports', () => {
     const h = createHarness();
     h.report(report({ kind: 'waiting', question: undefined }));

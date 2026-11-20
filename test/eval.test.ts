@@ -171,9 +171,9 @@ describe('A/B 启发式 vs 调度器（Source/Channel 边界）', () => {
 
   it('上半部紧急中断误抑制率为零且决策等待为零，下半部等待可度量', () => {
     const ab = compareAB(workload(), abConfig, runFactory);
-    // 负载含 8 个上半部紧急中断（每个 Executor 2 个携带 question 的 blocked）
-    expect(ab.heuristic.metrics.topInterrupts).toBe(8);
-    expect(ab.scheduler.metrics.topInterrupts).toBe(8);
+    // 负载含 20 个上半部紧急中断（每个 Executor 2 个携带 question 的 blocked 与 3 个 failed）
+    expect(ab.heuristic.metrics.topInterrupts).toBe(20);
+    expect(ab.scheduler.metrics.topInterrupts).toBe(20);
     expect(ab.heuristic.metrics.falseSuppressionRate).toBe(0);
     expect(ab.scheduler.metrics.falseSuppressionRate).toBe(0);
     expect(ab.heuristic.metrics.topDecisionWaitMs).toBe(0);

@@ -40,12 +40,12 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-const BOTTOM_KINDS: ReportKind[] = ['progress', 'ready', 'failed'];
+const CYCLE_KINDS: ReportKind[] = ['progress', 'ready', 'failed'];
 const DEFAULT_DRAIN_MS = 30_000;
 const DEFAULT_DRAIN_STEP_MS = 5_000;
 
 // 构造多 Executor 并发负载：每个 Executor 在时间跨度内交错产出 progress/ready/blocked/failed，
-// 每第 4 个报告为携带 question 的 blocked（上半部紧急中断）；同一接收人共享主题以便合并。
+// 每第 4 个报告为携带 question 的 blocked；blocked/failed 均为上半部紧急中断，同一接收人共享主题以便合并。
 // 返回按时间排序的输入轨迹，末尾附空闲推进使下半部中断最终全部送达。
 export function generateWorkload(config: WorkloadConfig): TraceStep[] {
   const rng = mulberry32(config.seed);
@@ -56,7 +56,7 @@ export function generateWorkload(config: WorkloadConfig): TraceStep[] {
       const jitter = (rng() - 0.5) * spacing * 0.6;
       const at = Math.max(0, Math.floor((j + 0.5) * spacing + jitter));
       const urgent = j % 4 === 3;
-      const kind: ReportKind = urgent ? 'blocked' : BOTTOM_KINDS[j % 3]!;
+      const kind: ReportKind = urgent ? 'blocked' : CYCLE_KINDS[j % 3]!;
       const report: Report = {
         ticketId: executor.ticketId,
         kind,
