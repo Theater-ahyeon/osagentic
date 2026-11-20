@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 export type ReportKind = 'progress' | 'waiting' | 'ready' | 'blocked' | 'failed' | 'dropped';
 export type Recipient = string;
 export type TicketId = string;
@@ -71,10 +73,9 @@ export function isInterruption(kind: ReportKind): boolean {
   return kind === 'progress' || kind === 'ready' || kind === 'blocked' || kind === 'failed';
 }
 
-let counter = 0;
+// 随机 UUID 保证跨进程重启唯一：持久送达的幂等检查不会把新消息误判为已送达
 export function nextId(prefix: string): string {
-  counter += 1;
-  return `${prefix}-${counter}`;
+  return `${prefix}-${randomUUID()}`;
 }
 
 export function toIrq(report: Report, now: number): Irq | undefined {

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createHarness } from './harness.js';
 import { BudgetQoSScheduler, type BudgetQoSConfig } from '../src/scheduler.js';
-import type { InMemoryPersistence } from '../src/persistence.js';
+import type { Persistence } from '../src/ports.js';
 import type { Report } from '../src/domain.js';
 
 function progress(ticketId: string, overrides: Partial<Report> = {}): Report {
@@ -13,7 +13,7 @@ function harnessWith(config: BudgetQoSConfig, now = 0) {
 }
 
 // 模拟重启：新 harness 的调度器从旧 harness 的持久化存储加载账本
-function restartWith(persistence: InMemoryPersistence, config: BudgetQoSConfig, now = 0) {
+function restartWith(persistence: Persistence, config: BudgetQoSConfig, now = 0) {
   return createHarness({ now, scheduler: (d) => new BudgetQoSScheduler({ ...d, persistence }, config) });
 }
 

@@ -2,7 +2,7 @@ import { ManualClock } from '../src/clock.js';
 import { InMemoryPersistence } from '../src/persistence.js';
 import { PauseState } from '../src/pause.js';
 import { createRuntime } from '../src/runtime.js';
-import type { Scheduler, Outbox, Metrics, Channel, SendResult } from '../src/ports.js';
+import type { Scheduler, Outbox, Metrics, Channel, SendResult, Persistence } from '../src/ports.js';
 import type { Message, Report } from '../src/domain.js';
 
 export class RecordingChannel implements Channel {
@@ -21,12 +21,13 @@ export class RecordingChannel implements Channel {
 export interface HarnessDeps {
   clock: ManualClock;
   channel: RecordingChannel;
-  persistence: InMemoryPersistence;
+  persistence: Persistence;
   pause: PauseState;
 }
 
 export interface HarnessOptions {
   now?: number;
+  persistence?: Persistence;
   scheduler?: (deps: HarnessDeps) => Scheduler;
   outbox?: (deps: HarnessDeps) => Outbox;
   metrics?: (deps: HarnessDeps) => Metrics;
@@ -35,7 +36,7 @@ export interface HarnessOptions {
 export function createHarness(opts: HarnessOptions = {}) {
   const clock = new ManualClock(opts.now ?? 0);
   const channel = new RecordingChannel();
-  const persistence = new InMemoryPersistence();
+  const persistence = opts.persistence ?? new InMemoryPersistence();
   const pause = new PauseState();
   const deps: HarnessDeps = { clock, channel, persistence, pause };
   const runtime = createRuntime({
