@@ -20,7 +20,8 @@ export interface OutboxOptions {
   backoffFactor?: number;
 }
 
-function deliveryKey(messageId: string): string {
+// 送达记录存储键：runtime 与 outbox 共用同一格式
+export function deliveryKey(messageId: string): string {
   return `delivery:${messageId}`;
 }
 
