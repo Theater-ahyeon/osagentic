@@ -1,4 +1,4 @@
-import type { Metrics, Persistence } from './ports.js';
+import type { AttentionFeedback, Metrics, Persistence, RecipientFeedback } from './ports.js';
 import type { Irq, Message, Recipient } from './domain.js';
 
 // 单次送达的注意力度量：成本与价值来自 irq.created 事件，at 为打断时机
@@ -23,7 +23,7 @@ export const METRICS_DELIVERIES_KEY = 'attention-metrics:deliveries';
 export const METRICS_RECIPIENTS_KEY = 'attention-metrics:recipients';
 
 // 注意力度量：每次送达按 message.irqIds 汇总成本与价值，按接收人累计，经 Persistence 持久化
-export class AttentionMetrics implements Metrics {
+export class AttentionMetrics implements Metrics, AttentionFeedback {
   private readonly persistence: Persistence;
   private readonly deliveries: DeliveryMetric[];
   private readonly recipients: Map<Recipient, RecipientMetrics>;
@@ -84,5 +84,25 @@ export class AttentionMetrics implements Metrics {
       }
     }
     this.scanned = events.length;
+  }
+
+  // 接收人历史反馈：平均响应延迟取各次送达（送达时刻 - 成员中断最早创建时刻）的均值
+  feedbackFor(recipient: Recipient): RecipientFeedback | undefined {
+    this.indexNewIrqs();
+    const mine = this.deliveries.filter((delivery) => delivery.recipient === recipient);
+    if (mine.length === 0) return undefined;
+    let totalLatency = 0;
+    for (const delivery of mine) {
+      let earliest = delivery.at;
+      for (const id of delivery.irqIds) {
+        const irq = this.irqIndex.get(id);
+        if (irq && irq.createdAt < earliest) earliest = irq.createdAt;
+      }
+      totalLatency += delivery.at - earliest;
+    }
+    return {
+      meanResponseMs: totalLatency / mine.length,
+      value: this.recipients.get(recipient)?.value ?? 0,
+    };
   }
 }

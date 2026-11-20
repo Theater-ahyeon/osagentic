@@ -1,4 +1,4 @@
-import type { Persistence, Scheduler } from './ports.js';
+import type { AttentionFeedback, Persistence, Scheduler } from './ports.js';
 import type { Irq, Message, Recipient } from './domain.js';
 import { messageOf } from './domain.js';
 import type { PauseState } from './pause.js';
@@ -11,6 +11,7 @@ export interface BudgetQoSConfig extends BudgetLimits {
   version?: number;
   recipients?: Record<Recipient, BudgetLimits>;
   teams?: Record<string, TeamBudgetLimits>;
+  valuePriorityWeight?: number; // 历史价值放大优先级权重的系数：权重 = 1 + 系数 × 累计产出价值
 }
 
 export interface SchedulerDeps {
@@ -18,15 +19,20 @@ export interface SchedulerDeps {
   pause: PauseState;
 }
 
-// QoS 排序：priority 降序 → 有效 deadline 升序（无 deadline 视为无穷远）→ value/cost 降序；
+// QoS 排序：priority 降序 → 有效 deadline 升序（无 deadline 视为无穷远）→ 加权 value/cost 降序；
 // 完全同序时保持提交顺序（稳定排序）
-function qosOrder(a: Irq, b: Irq, deadlineOf: (irq: Irq) => number): number {
+function qosOrder(
+  a: Irq,
+  b: Irq,
+  deadlineOf: (irq: Irq) => number,
+  weightOf: (recipient: Recipient) => number,
+): number {
   if (a.priority !== b.priority) return b.priority - a.priority;
   const deadlineA = deadlineOf(a);
   const deadlineB = deadlineOf(b);
   if (deadlineA !== deadlineB) return deadlineA - deadlineB;
-  const ratioA = a.cost > 0 ? a.value / a.cost : Number.POSITIVE_INFINITY;
-  const ratioB = b.cost > 0 ? b.value / b.cost : Number.POSITIVE_INFINITY;
+  const ratioA = (a.cost > 0 ? a.value / a.cost : Number.POSITIVE_INFINITY) * weightOf(a.recipient);
+  const ratioB = (b.cost > 0 ? b.value / b.cost : Number.POSITIVE_INFINITY) * weightOf(b.recipient);
   if (ratioA !== ratioB) return ratioB - ratioA;
   return 0;
 }
@@ -50,6 +56,7 @@ export class BudgetQoSScheduler implements Scheduler {
   constructor(
     private readonly deps: SchedulerDeps,
     private config: BudgetQoSConfig,
+    private readonly feedback?: AttentionFeedback,
   ) {
     this.budget = new AttentionBudget(
       deps.persistence,
@@ -98,6 +105,13 @@ export class BudgetQoSScheduler implements Scheduler {
     return irq.deadline + (this.deps.pause.pausedMs() - baseline);
   }
 
+  // 接收人优先级权重：历史产出价值越高，同等条件下越先送达
+  private weightOf(recipient: Recipient): number {
+    const stats = this.feedback?.feedbackFor(recipient);
+    if (!stats) return 1;
+    return 1 + (this.config.valuePriorityWeight ?? 0.1) * stats.value;
+  }
+
   due(now: number): Message[] {
     const messages: Message[] = [];
 
@@ -107,7 +121,14 @@ export class BudgetQoSScheduler implements Scheduler {
       messages.push(messageOf(irq, now));
     }
 
-    this.bottom.sort((a, b) => qosOrder(a, b, (irq) => this.effectiveDeadline(irq) ?? Number.POSITIVE_INFINITY));
+    this.bottom.sort((a, b) =>
+      qosOrder(
+        a,
+        b,
+        (irq) => this.effectiveDeadline(irq) ?? Number.POSITIVE_INFINITY,
+        (recipient) => this.weightOf(recipient),
+      ),
+    );
     const throttled: Irq[] = [];
     for (const irq of this.bottom) {
       // 截止时间到期后不再节流，立即补发（仍计入预算消耗）

@@ -1,4 +1,4 @@
-import type { DomainEvent, Irq, Message } from './domain.js';
+import type { DomainEvent, Irq, Message, Recipient } from './domain.js';
 
 export interface Clock {
   now(): number;
@@ -31,4 +31,15 @@ export interface Outbox {
 
 export interface Metrics {
   recordDelivery(message: Message, now: number): void;
+}
+
+// 接收人历史反馈：平均响应延迟（创建到送达）与累计产出价值
+export interface RecipientFeedback {
+  meanResponseMs: number;
+  value: number;
+}
+
+// 自适应调度的反馈来源：按接收人查询历史度量
+export interface AttentionFeedback {
+  feedbackFor(recipient: Recipient): RecipientFeedback | undefined;
 }
