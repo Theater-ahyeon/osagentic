@@ -5,8 +5,10 @@ import type { PauseState } from './pause.js';
 import { AttentionBudget, type BudgetLimits, type TeamBudgetLimits } from './budget.js';
 
 // 默认配额作用于每个接收人；recipients 可为特定接收人指定独立配额；
-// teams 为团队聚合配额，成员共享团队窗口内的次数与成本上限
+// teams 为团队聚合配额，成员共享团队窗口内的次数与成本上限；
+// version 标识策略版本，版本变更经 applyPolicy 生效并触发待决中断重新评估
 export interface BudgetQoSConfig extends BudgetLimits {
+  version?: number;
   recipients?: Record<Recipient, BudgetLimits>;
   teams?: Record<string, TeamBudgetLimits>;
 }
@@ -39,13 +41,23 @@ export class BudgetQoSScheduler implements Scheduler {
 
   constructor(
     private readonly deps: SchedulerDeps,
-    config: BudgetQoSConfig,
+    private config: BudgetQoSConfig,
   ) {
     this.budget = new AttentionBudget(
       deps.persistence,
-      (recipient) => config.recipients?.[recipient] ?? config,
-      () => config.teams ?? {},
+      (recipient) => this.config.recipients?.[recipient] ?? this.config,
+      () => this.config.teams ?? {},
     );
+  }
+
+  // 策略版本化生效：替换配额与团队配置；待决中断在下一次调度按新策略
+  // 重新验证预算与团队授权（闸门逐条重判，QoS 顺序随之重排）
+  applyPolicy(config: BudgetQoSConfig): void {
+    this.config = config;
+  }
+
+  policyVersion(): number | undefined {
+    return this.config.version;
   }
 
   submit(irq: Irq): void {

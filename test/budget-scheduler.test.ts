@@ -17,6 +17,13 @@ function restartWith(persistence: Persistence, config: BudgetQoSConfig, now = 0)
   return createHarness({ now, scheduler: (d) => new BudgetQoSScheduler({ ...d, persistence }, config) });
 }
 
+// 暴露调度器实例以便在边界测试中施加策略变更
+function harnessWithPolicy(config: BudgetQoSConfig, now = 0) {
+  let scheduler!: BudgetQoSScheduler;
+  const h = createHarness({ now, scheduler: (d) => (scheduler = new BudgetQoSScheduler(d, config)) });
+  return { h, scheduler };
+}
+
 describe('BudgetQoSScheduler 注意力预算（Source/Channel 边界）', () => {
   it('超出每窗口次数预算的下半部中断被节流，窗口滚动后补发', () => {
     const h = harnessWith({ windowMs: 1000, maxInterrupts: 2, maxCost: 100 });
@@ -282,5 +289,48 @@ describe('BudgetQoSScheduler 注意力预算（Source/Channel 边界）', () => 
     h.report(progress('c1', { recipient: 'carol' }));
     h.report(progress('c2', { recipient: 'carol' }));
     expect(h.channel.sent().map((m) => m.ticketId)).toEqual(['a1', 'c1', 'c2']);
+  });
+
+  it('策略版本变更提高配额后，待决中断按新策略重新评估并立即补发', () => {
+    const { h, scheduler } = harnessWithPolicy({ version: 1, windowMs: 1000, maxInterrupts: 1, maxCost: 100 });
+    h.report(progress('a1'));
+    h.report(progress('a2'));
+    expect(h.channel.sent()).toHaveLength(1);
+
+    scheduler.applyPolicy({ version: 2, windowMs: 1000, maxInterrupts: 5, maxCost: 100 });
+    expect(scheduler.policyVersion()).toBe(2);
+    h.advance(0);
+    expect(h.channel.sent().map((m) => m.ticketId)).toEqual(['a1', 'a2']);
+  });
+
+  it('策略版本变更收紧配额后，新提交的下半部中断按新策略节流', () => {
+    const { h, scheduler } = harnessWithPolicy({ version: 1, windowMs: 1000, maxInterrupts: 5, maxCost: 100 });
+    h.report(progress('a1'));
+    scheduler.applyPolicy({ version: 2, windowMs: 1000, maxInterrupts: 1, maxCost: 100 });
+    h.report(progress('a2'));
+    expect(h.channel.sent().map((m) => m.ticketId)).toEqual(['a1']);
+
+    h.advance(1000);
+    expect(h.channel.sent().map((m) => m.ticketId)).toEqual(['a1', 'a2']);
+  });
+
+  it('策略版本变更新增团队配额后，待决中断重新验证团队授权', () => {
+    const { h, scheduler } = harnessWithPolicy({ version: 1, windowMs: 1000, maxInterrupts: 10, maxCost: 100 });
+    h.pauseNow();
+    h.report(progress('a1'));
+    h.report(progress('b1', { recipient: 'bob' }));
+
+    scheduler.applyPolicy({
+      version: 2,
+      windowMs: 1000,
+      maxInterrupts: 10,
+      maxCost: 100,
+      teams: { core: { windowMs: 1000, maxInterrupts: 1, maxCost: 100, members: ['alice', 'bob'] } },
+    });
+    h.resumeNow();
+    expect(h.channel.sent().map((m) => m.ticketId)).toEqual(['a1']);
+
+    h.advance(1000);
+    expect(h.channel.sent().map((m) => m.ticketId)).toEqual(['a1', 'b1']);
   });
 });
