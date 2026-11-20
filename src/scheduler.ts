@@ -3,6 +3,7 @@ import type { Irq, Message, Recipient } from './domain.js';
 import { messageOf } from './domain.js';
 import type { PauseState } from './pause.js';
 import { AttentionBudget, type BudgetLimits, type TeamBudgetLimits } from './budget.js';
+import type { HealthBoard, HealthEntry } from './health.js';
 
 // 默认配额作用于每个接收人；recipients 可为特定接收人指定独立配额；
 // teams 为团队聚合配额，成员共享团队窗口内的次数与成本上限；
@@ -17,6 +18,7 @@ export interface BudgetQoSConfig extends BudgetLimits {
 export interface SchedulerDeps {
   persistence: Persistence;
   pause: PauseState;
+  health?: HealthBoard;
 }
 
 // QoS 排序：priority 降序 → 有效 deadline 升序（无 deadline 视为无穷远）→ 加权 value/cost 降序；
@@ -72,6 +74,7 @@ export class BudgetQoSScheduler implements Scheduler {
         if (irq.deadline !== undefined) this.pauseBaselines.set(irq.id, deps.pause.pausedMs());
       }
     }
+    this.deps.health?.claim('attention-scheduler', (now) => this.healthEntry(now));
   }
 
   // 策略版本化生效：替换配额与团队配置；待决中断在下一次调度按新策略
@@ -110,6 +113,24 @@ export class BudgetQoSScheduler implements Scheduler {
     const stats = this.feedback?.feedbackFor(recipient);
     if (!stats) return 1;
     return 1 + (this.config.valuePriorityWeight ?? 0.1) * stats.value;
+  }
+
+  // 健康条目：截止时间已过仍待决的中断表明调度泵停止运转；暂停属有意抑制，不报故障
+  private healthEntry(now: number): HealthEntry {
+    const pending = this.top.length + this.bottom.length;
+    if (this.deps.pause.isPaused()) {
+      return { component: 'attention-scheduler', healthy: true, pending, detail: 'paused' };
+    }
+    const overdue = this.bottom.some((irq) => {
+      const deadline = this.effectiveDeadline(irq);
+      return deadline !== undefined && now >= deadline;
+    });
+    return {
+      component: 'attention-scheduler',
+      healthy: !overdue,
+      pending,
+      detail: overdue ? 'deadline-miss' : 'ok',
+    };
   }
 
   due(now: number): Message[] {

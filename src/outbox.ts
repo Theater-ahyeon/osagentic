@@ -3,6 +3,7 @@ import type { DeliveryRecord, Message } from './domain.js';
 import { PauseState } from './pause.js';
 import { EffectsQueue } from './effects.js';
 import type { EffectOutcome } from './effects.js';
+import type { HealthBoard, HealthEntry } from './health.js';
 
 export interface OutboxDeps {
   clock: Clock;
@@ -10,6 +11,7 @@ export interface OutboxDeps {
   persistence: Persistence;
   pause?: PauseState;
   metrics?: Metrics;
+  health?: HealthBoard;
 }
 
 export interface OutboxOptions {
@@ -55,6 +57,23 @@ export class DurableOutbox implements Outbox {
       if (record?.status === 'sent') this.effects.discard(id);
     }
     this.lastPausedMs = this.pause.pausedMs();
+    deps.health?.claim('attention-outbox', (now) => this.healthEntry(now));
+  }
+
+  // 健康条目：重试停滞（超过截止时间一个退避间隔仍未执行）表明送达泵停止运转；
+  // 暂停属有意抑制，不报故障
+  private healthEntry(now: number): HealthEntry {
+    const pending = this.effects.ids().length;
+    if (this.pause.isPaused()) {
+      return { component: 'attention-outbox', healthy: true, pending, detail: 'paused' };
+    }
+    const stuck = this.effects.stuckCount(now);
+    return {
+      component: 'attention-outbox',
+      healthy: stuck === 0,
+      pending,
+      detail: stuck > 0 ? 'stuck-retry' : 'ok',
+    };
   }
 
   enqueue(message: Message): void {
