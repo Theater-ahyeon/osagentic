@@ -46,7 +46,8 @@ class SimpleOutbox implements Outbox {
     if (result === 'sent') record.sentAt = now;
     this.persistence.save(`delivery:${message.id}`, record);
     this.persistence.append({ type: 'delivery.sent', at: now, payload: record });
-    this.metrics.recordDelivery(message, now);
+    // 度量只记录成功送达；waiting/gone 尚未消耗接收人注意力
+    if (result === 'sent') this.metrics.recordDelivery(message, now);
   }
 
   drain(_now: number): void {}

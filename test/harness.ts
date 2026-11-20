@@ -28,6 +28,7 @@ export interface HarnessDeps {
 export interface HarnessOptions {
   now?: number;
   persistence?: Persistence;
+  channel?: RecordingChannel;
   scheduler?: (deps: HarnessDeps) => Scheduler;
   outbox?: (deps: HarnessDeps) => Outbox;
   metrics?: (deps: HarnessDeps) => Metrics;
@@ -35,7 +36,7 @@ export interface HarnessOptions {
 
 export function createHarness(opts: HarnessOptions = {}) {
   const clock = new ManualClock(opts.now ?? 0);
-  const channel = new RecordingChannel();
+  const channel = opts.channel ?? new RecordingChannel();
   const persistence = opts.persistence ?? new InMemoryPersistence();
   const pause = new PauseState();
   const deps: HarnessDeps = { clock, channel, persistence, pause };

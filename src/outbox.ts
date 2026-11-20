@@ -1,4 +1,4 @@
-import type { Channel, Clock, Outbox, Persistence, SendResult } from './ports.js';
+import type { Channel, Clock, Metrics, Outbox, Persistence, SendResult } from './ports.js';
 import type { DeliveryRecord, Message } from './domain.js';
 import { PauseState } from './pause.js';
 import { EffectsQueue } from './effects.js';
@@ -9,6 +9,7 @@ export interface OutboxDeps {
   channel: Channel;
   persistence: Persistence;
   pause?: PauseState;
+  metrics?: Metrics;
 }
 
 export interface OutboxOptions {
@@ -28,6 +29,7 @@ export class DurableOutbox implements Outbox {
   private readonly channel: Channel;
   private readonly persistence: Persistence;
   private readonly pause: PauseState;
+  private readonly metrics: Metrics | undefined;
   private readonly effects: EffectsQueue<Message>;
   private lastPausedMs: number;
   // 暂停期间或恢复后顺延生效前入队的消息立即送达，不参与截止时间顺延
@@ -37,6 +39,7 @@ export class DurableOutbox implements Outbox {
     this.clock = deps.clock;
     this.channel = deps.channel;
     this.persistence = deps.persistence;
+    this.metrics = deps.metrics;
     this.pause = deps.pause ?? new PauseState();
     this.effects = new EffectsQueue<Message>(
       { persistence: deps.persistence },
@@ -102,6 +105,7 @@ export class DurableOutbox implements Outbox {
       updated.sentAt = now;
       this.persistence.save(key, updated);
       this.persistence.append({ type: 'delivery.sent', at: now, payload: updated });
+      this.metrics?.recordDelivery(message, now);
       return 'done';
     }
     this.persistence.save(key, updated);
