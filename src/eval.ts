@@ -1,9 +1,9 @@
-import type { Report, ReportKind, Irq, Message } from './domain.js';
+import type { Report, ReportKind, Irq, Message, DeliveryMetric } from './domain.js';
 import type { Channel, Metrics, Persistence, Scheduler } from './ports.js';
 import type { ManualClock } from './clock.js';
 import type { PauseState } from './pause.js';
 import type { Runtime } from './runtime.js';
-import { AttentionMetrics, type DeliveryMetric } from './metrics.js';
+import { AttentionMetrics, irqIndexOf } from './metrics.js';
 import { AttentionViews, type AttentionPanel } from './views.js';
 import { BudgetQoSScheduler, type BudgetQoSConfig } from './scheduler.js';
 import { CoalescingScheduler, type CoalesceConfig } from './coalesce.js';
@@ -40,12 +40,12 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-const BOTTOM_KINDS: ReportKind[] = ['progress', 'ready', 'failed'];
+const CYCLE_KINDS: ReportKind[] = ['progress', 'ready', 'failed'];
 const DEFAULT_DRAIN_MS = 30_000;
 const DEFAULT_DRAIN_STEP_MS = 5_000;
 
 // 构造多 Executor 并发负载：每个 Executor 在时间跨度内交错产出 progress/ready/blocked/failed，
-// 每第 4 个报告为携带 question 的 blocked（上半部紧急中断）；同一接收人共享主题以便合并。
+// 每第 4 个报告为携带 question 的 blocked；blocked/failed 均为上半部紧急中断，同一接收人共享主题以便合并。
 // 返回按时间排序的输入轨迹，末尾附空闲推进使下半部中断最终全部送达。
 export function generateWorkload(config: WorkloadConfig): TraceStep[] {
   const rng = mulberry32(config.seed);
@@ -56,7 +56,7 @@ export function generateWorkload(config: WorkloadConfig): TraceStep[] {
       const jitter = (rng() - 0.5) * spacing * 0.6;
       const at = Math.max(0, Math.floor((j + 0.5) * spacing + jitter));
       const urgent = j % 4 === 3;
-      const kind: ReportKind = urgent ? 'blocked' : BOTTOM_KINDS[j % 3]!;
+      const kind: ReportKind = urgent ? 'blocked' : CYCLE_KINDS[j % 3]!;
       const report: Report = {
         ticketId: executor.ticketId,
         kind,
@@ -100,7 +100,7 @@ export function attentionScheduler(
 ): Scheduler {
   return new ObservabilityScheduler(
     { persistence: deps.persistence },
-    new CoalescingScheduler(new BudgetQoSScheduler(deps, config.budget), config.coalesce),
+    new CoalescingScheduler(new BudgetQoSScheduler(deps, config.budget), config.coalesce, deps.persistence),
   );
 }
 
@@ -168,14 +168,12 @@ function meanInterInterruptMs(deliveries: DeliveryMetric[]): number {
 
 // 从持久事件与 T5 读视图计算度量
 function evaluate(persistence: Persistence, panel: AttentionPanel): EvalMetrics {
-  const irqs: Irq[] = [];
+  const irqs = Array.from(irqIndexOf(persistence).values());
   // 每个中断的首次送达时刻（合并摘要的成员共享同一送达时刻）
   const deliveredAt = new Map<string, number>();
   for (const event of persistence.log()) {
-    if (event.type === 'irq.created') {
-      irqs.push(event.payload as Irq);
-    } else if (event.type === 'irq.delivered') {
-      const metric = event.payload as DeliveryMetric;
+    if (event.type === 'irq.delivered') {
+      const metric: DeliveryMetric = event.payload;
       for (const id of metric.irqIds) {
         if (!deliveredAt.has(id)) deliveredAt.set(id, metric.at);
       }

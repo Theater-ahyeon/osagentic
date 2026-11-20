@@ -1,14 +1,17 @@
-import type { Channel, Clock, Outbox, Persistence, SendResult } from './ports.js';
+import type { Channel, Clock, Metrics, Outbox, Persistence, SendResult } from './ports.js';
 import type { DeliveryRecord, Message } from './domain.js';
 import { PauseState } from './pause.js';
 import { EffectsQueue } from './effects.js';
 import type { EffectOutcome } from './effects.js';
+import type { HealthBoard, HealthEntry } from './health.js';
 
 export interface OutboxDeps {
   clock: Clock;
   channel: Channel;
   persistence: Persistence;
   pause?: PauseState;
+  metrics?: Metrics;
+  health?: HealthBoard;
 }
 
 export interface OutboxOptions {
@@ -17,7 +20,8 @@ export interface OutboxOptions {
   backoffFactor?: number;
 }
 
-function deliveryKey(messageId: string): string {
+// 送达记录存储键：runtime 与 outbox 共用同一格式
+export function deliveryKey(messageId: string): string {
   return `delivery:${messageId}`;
 }
 
@@ -28,6 +32,7 @@ export class DurableOutbox implements Outbox {
   private readonly channel: Channel;
   private readonly persistence: Persistence;
   private readonly pause: PauseState;
+  private readonly metrics: Metrics | undefined;
   private readonly effects: EffectsQueue<Message>;
   private lastPausedMs: number;
   // 暂停期间或恢复后顺延生效前入队的消息立即送达，不参与截止时间顺延
@@ -37,6 +42,7 @@ export class DurableOutbox implements Outbox {
     this.clock = deps.clock;
     this.channel = deps.channel;
     this.persistence = deps.persistence;
+    this.metrics = deps.metrics;
     this.pause = deps.pause ?? new PauseState();
     this.effects = new EffectsQueue<Message>(
       { persistence: deps.persistence },
@@ -52,6 +58,23 @@ export class DurableOutbox implements Outbox {
       if (record?.status === 'sent') this.effects.discard(id);
     }
     this.lastPausedMs = this.pause.pausedMs();
+    deps.health?.claim('attention-outbox', (now) => this.healthEntry(now));
+  }
+
+  // 健康条目：重试停滞（超过截止时间一个退避间隔仍未执行）表明送达泵停止运转；
+  // 暂停属有意抑制，不报故障
+  private healthEntry(now: number): HealthEntry {
+    const pending = this.effects.ids().length;
+    if (this.pause.isPaused()) {
+      return { component: 'attention-outbox', healthy: true, pending, detail: 'paused' };
+    }
+    const stuck = this.effects.stuckCount(now);
+    return {
+      component: 'attention-outbox',
+      healthy: stuck === 0,
+      pending,
+      detail: stuck > 0 ? 'stuck-retry' : 'ok',
+    };
   }
 
   enqueue(message: Message): void {
@@ -102,6 +125,7 @@ export class DurableOutbox implements Outbox {
       updated.sentAt = now;
       this.persistence.save(key, updated);
       this.persistence.append({ type: 'delivery.sent', at: now, payload: updated });
+      this.metrics?.recordDelivery(message, now);
       return 'done';
     }
     this.persistence.save(key, updated);

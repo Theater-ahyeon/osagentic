@@ -114,7 +114,7 @@ describe('队列深度与合并/节流计数（Source/Channel 边界）', () => 
     const config: BudgetQoSConfig = { windowMs: 60_000, maxInterrupts: 100, maxCost: 1000 };
     const h = createHarness({
       scheduler: (d) =>
-        new ObservabilityScheduler(d, new CoalescingScheduler(new BudgetQoSScheduler(d, config), { windowMs: 1000, growthMs: 0 })),
+        new ObservabilityScheduler(d, new CoalescingScheduler(new BudgetQoSScheduler(d, config), { windowMs: 1000, growthMs: 0 }, d.persistence)),
       metrics: (d) => new AttentionMetrics(d),
     });
     h.report(progress('t1', { topic: 'build' }));
@@ -130,6 +130,60 @@ describe('队列深度与合并/节流计数（Source/Channel 边界）', () => 
     expect(sent[0]!.irqIds).toHaveLength(3);
     panel = new AttentionViews(h.persistence, config).panel(h.clock.now());
     expect(panel.coalesced).toBe(1);
+    expect(panel.queueDepth).toBe(0);
+  });
+
+  it('合并缓冲中的中断不计入节流统计', () => {
+    const config: BudgetQoSConfig = { windowMs: 60_000, maxInterrupts: 100, maxCost: 1000 };
+    const h = createHarness({
+      scheduler: (d) =>
+        new ObservabilityScheduler(d, new CoalescingScheduler(new BudgetQoSScheduler(d, config), { windowMs: 1000, growthMs: 0 }, d.persistence)),
+      metrics: (d) => new AttentionMetrics(d),
+    });
+    h.report(progress('t1', { topic: 'build' }));
+    h.report(progress('t2', { topic: 'build' }));
+    h.report(progress('t3', { topic: 'build' }));
+    const views = new AttentionViews(h.persistence, config);
+    let panel = views.panel(h.clock.now());
+    expect(panel.queueDepth).toBe(3);
+    expect(panel.throttled).toBe(0);
+    expect(panel.coalesced).toBe(0);
+
+    h.advance(1000);
+    panel = views.panel(h.clock.now());
+    expect(panel.coalesced).toBe(1);
+    expect(panel.throttled).toBe(0);
+    expect(panel.queueDepth).toBe(0);
+  });
+
+  it('预算节流与合并缓冲同时存在时只统计预算节流', () => {
+    const config: BudgetQoSConfig = { windowMs: 1000, maxInterrupts: 1, maxCost: 100 };
+    const h = createHarness({
+      scheduler: (d) =>
+        new ObservabilityScheduler(d, new CoalescingScheduler(new BudgetQoSScheduler(d, config), { windowMs: 500, growthMs: 0 }, d.persistence)),
+      metrics: (d) => new AttentionMetrics(d),
+    });
+    h.report(progress('t1', { topic: 'build' }));
+    h.report(progress('t2', { topic: 'build' }));
+    const views = new AttentionViews(h.persistence, config);
+    let panel = views.panel(h.clock.now());
+    expect(panel.queueDepth).toBe(2);
+    expect(panel.throttled).toBe(1);
+
+    // t1 进入合并缓冲，t2 被预算节流：只有 t2 计入节流
+    h.advance(500);
+    panel = views.panel(h.clock.now());
+    expect(h.channel.sent()).toHaveLength(1);
+    expect(panel.throttled).toBe(1);
+    expect(panel.queueDepth).toBe(1);
+
+    // t=1000 预算窗口滚动，t2 补发进入新的合并缓冲；t=1500 窗口到期送达
+    h.advance(500);
+    expect(h.channel.sent()).toHaveLength(1);
+    h.advance(500);
+    panel = views.panel(h.clock.now());
+    expect(h.channel.sent()).toHaveLength(2);
+    expect(panel.throttled).toBe(1);
     expect(panel.queueDepth).toBe(0);
   });
 });

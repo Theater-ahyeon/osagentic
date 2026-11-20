@@ -48,6 +48,16 @@ export class EffectsQueue<T> {
     return this.entries.map((entry) => entry.id);
   }
 
+  // 超过重试截止时间一个退避间隔仍未执行的条目数：送达泵停止运转的故障信号
+  stuckCount(now: number): number {
+    let count = 0;
+    for (const entry of this.entries) {
+      const interval = this.baseDelayMs * this.backoffFactor ** Math.max(0, entry.attempts - 1);
+      if (now > entry.nextAttemptAt + interval) count += 1;
+    }
+    return count;
+  }
+
   enqueue(task: EffectTask<T>, now: number): void {
     if (this.has(task.id)) return;
     this.entries.push({ ...task, attempts: 0, nextAttemptAt: now });

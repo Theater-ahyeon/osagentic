@@ -13,7 +13,7 @@ function progress(ticketId: string, overrides: Partial<Report> = {}): Report {
 function harnessWith(coalesce: CoalesceConfig, budget: BudgetQoSConfig = ampleBudget, now = 0) {
   return createHarness({
     now,
-    scheduler: (d) => new CoalescingScheduler(new BudgetQoSScheduler(d, budget), coalesce),
+    scheduler: (d) => new CoalescingScheduler(new BudgetQoSScheduler(d, budget), coalesce, d.persistence),
   });
 }
 

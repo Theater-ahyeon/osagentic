@@ -2,6 +2,7 @@ import type { Clock, Channel, Persistence, Scheduler, Outbox, Metrics } from './
 import type { DeliveryRecord, Irq, Message, Report } from './domain.js';
 import { toIrq, messageOf } from './domain.js';
 import { PauseState } from './pause.js';
+import { deliveryKey } from './outbox.js';
 
 export interface RuntimeDeps {
   clock: Clock;
@@ -44,9 +45,10 @@ class SimpleOutbox implements Outbox {
     const result = this.channel.send(message);
     const record: DeliveryRecord = { message, status: result, attempts: 1 };
     if (result === 'sent') record.sentAt = now;
-    this.persistence.save(`delivery:${message.id}`, record);
+    this.persistence.save(deliveryKey(message.id), record);
     this.persistence.append({ type: 'delivery.sent', at: now, payload: record });
-    this.metrics.recordDelivery(message, now);
+    // 度量只记录成功送达；waiting/gone 尚未消耗接收人注意力
+    if (result === 'sent') this.metrics.recordDelivery(message, now);
   }
 
   drain(_now: number): void {}

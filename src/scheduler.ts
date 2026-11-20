@@ -1,30 +1,50 @@
-import type { Persistence, Scheduler } from './ports.js';
+import type { AttentionFeedback, Persistence, Scheduler } from './ports.js';
 import type { Irq, Message, Recipient } from './domain.js';
 import { messageOf } from './domain.js';
 import type { PauseState } from './pause.js';
-import { AttentionBudget, type BudgetLimits } from './budget.js';
+import { AttentionBudget, type BudgetLimits, type TeamBudgetLimits } from './budget.js';
+import type { HealthBoard, HealthEntry } from './health.js';
 
-// 默认配额作用于每个接收人；recipients 可为特定接收人指定独立配额
+// 默认配额作用于每个接收人；recipients 可为特定接收人指定独立配额；
+// teams 为团队聚合配额，成员共享团队窗口内的次数与成本上限；
+// version 标识策略版本，版本变更经 applyPolicy 生效并触发待决中断重新评估
 export interface BudgetQoSConfig extends BudgetLimits {
+  version?: number;
   recipients?: Record<Recipient, BudgetLimits>;
+  teams?: Record<string, TeamBudgetLimits>;
+  valuePriorityWeight?: number; // 历史价值放大优先级权重的系数：权重 = 1 + 系数 × 累计产出价值
 }
 
 export interface SchedulerDeps {
   persistence: Persistence;
   pause: PauseState;
+  health?: HealthBoard;
 }
 
-// QoS 排序：priority 降序 → 有效 deadline 升序（无 deadline 视为无穷远）→ value/cost 降序；
+// QoS 排序：priority 降序 → 有效 deadline 升序（无 deadline 视为无穷远）→ 加权 value/cost 降序；
 // 完全同序时保持提交顺序（稳定排序）
-function qosOrder(a: Irq, b: Irq, deadlineOf: (irq: Irq) => number): number {
+function qosOrder(
+  a: Irq,
+  b: Irq,
+  deadlineOf: (irq: Irq) => number,
+  weightOf: (recipient: Recipient) => number,
+): number {
   if (a.priority !== b.priority) return b.priority - a.priority;
   const deadlineA = deadlineOf(a);
   const deadlineB = deadlineOf(b);
   if (deadlineA !== deadlineB) return deadlineA - deadlineB;
-  const ratioA = a.cost > 0 ? a.value / a.cost : Number.POSITIVE_INFINITY;
-  const ratioB = b.cost > 0 ? b.value / b.cost : Number.POSITIVE_INFINITY;
+  const ratioA = (a.cost > 0 ? a.value / a.cost : Number.POSITIVE_INFINITY) * weightOf(a.recipient);
+  const ratioB = (b.cost > 0 ? b.value / b.cost : Number.POSITIVE_INFINITY) * weightOf(b.recipient);
   if (ratioA !== ratioB) return ratioB - ratioA;
   return 0;
+}
+
+const SCHEDULER_PENDING_KEY = 'attention-scheduler:pending';
+
+// 待决队列持久化形状：重启后恢复上半部与下半部中断
+interface PendingState {
+  top: Irq[];
+  bottom: Irq[];
 }
 
 // QoS 调度器：上半部立即送达且永不节流；下半部按预算闸门送达，耗尽时节流、窗口滚动后补发
@@ -37,18 +57,48 @@ export class BudgetQoSScheduler implements Scheduler {
 
   constructor(
     private readonly deps: SchedulerDeps,
-    config: BudgetQoSConfig,
+    private config: BudgetQoSConfig,
+    private readonly feedback?: AttentionFeedback,
   ) {
-    this.budget = new AttentionBudget(deps.persistence, (recipient) => config.recipients?.[recipient] ?? config);
+    this.budget = new AttentionBudget(
+      deps.persistence,
+      (recipient) => this.config.recipients?.[recipient] ?? this.config,
+      () => this.config.teams ?? {},
+    );
+    // 重启恢复：加载待决队列；PauseState 不持久化，恢复的中断以当前暂停时长为顺延基线
+    const saved = deps.persistence.load<PendingState>(SCHEDULER_PENDING_KEY);
+    if (saved) {
+      this.top.push(...saved.top);
+      this.bottom.push(...saved.bottom);
+      for (const irq of this.bottom) {
+        if (irq.deadline !== undefined) this.pauseBaselines.set(irq.id, deps.pause.pausedMs());
+      }
+    }
+    this.deps.health?.claim('attention-scheduler', (now) => this.healthEntry(now));
+  }
+
+  // 策略版本化生效：替换配额与团队配置；待决中断在下一次调度按新策略
+  // 重新验证预算与团队授权（闸门逐条重判，QoS 顺序随之重排）
+  applyPolicy(config: BudgetQoSConfig): void {
+    this.config = config;
+  }
+
+  policyVersion(): number | undefined {
+    return this.config.version;
   }
 
   submit(irq: Irq): void {
     if (irq.half === 'top') {
       this.top.push(irq);
-      return;
+    } else {
+      if (irq.deadline !== undefined) this.pauseBaselines.set(irq.id, this.deps.pause.pausedMs());
+      this.bottom.push(irq);
     }
-    if (irq.deadline !== undefined) this.pauseBaselines.set(irq.id, this.deps.pause.pausedMs());
-    this.bottom.push(irq);
+    this.persistState();
+  }
+
+  private persistState(): void {
+    this.deps.persistence.save(SCHEDULER_PENDING_KEY, { top: this.top, bottom: this.bottom });
   }
 
   // 有效截止时间 = 原始截止时间 + 提交之后经历的暂停时长
@@ -56,6 +106,31 @@ export class BudgetQoSScheduler implements Scheduler {
     if (irq.deadline === undefined) return undefined;
     const baseline = this.pauseBaselines.get(irq.id) ?? 0;
     return irq.deadline + (this.deps.pause.pausedMs() - baseline);
+  }
+
+  // 接收人优先级权重：历史产出价值越高，同等条件下越先送达
+  private weightOf(recipient: Recipient): number {
+    const stats = this.feedback?.feedbackFor(recipient);
+    if (!stats) return 1;
+    return 1 + (this.config.valuePriorityWeight ?? 0.1) * stats.value;
+  }
+
+  // 健康条目：截止时间已过仍待决的中断表明调度泵停止运转；暂停属有意抑制，不报故障
+  private healthEntry(now: number): HealthEntry {
+    const pending = this.top.length + this.bottom.length;
+    if (this.deps.pause.isPaused()) {
+      return { component: 'attention-scheduler', healthy: true, pending, detail: 'paused' };
+    }
+    const overdue = this.bottom.some((irq) => {
+      const deadline = this.effectiveDeadline(irq);
+      return deadline !== undefined && now >= deadline;
+    });
+    return {
+      component: 'attention-scheduler',
+      healthy: !overdue,
+      pending,
+      detail: overdue ? 'deadline-miss' : 'ok',
+    };
   }
 
   due(now: number): Message[] {
@@ -67,7 +142,14 @@ export class BudgetQoSScheduler implements Scheduler {
       messages.push(messageOf(irq, now));
     }
 
-    this.bottom.sort((a, b) => qosOrder(a, b, (irq) => this.effectiveDeadline(irq) ?? Number.POSITIVE_INFINITY));
+    this.bottom.sort((a, b) =>
+      qosOrder(
+        a,
+        b,
+        (irq) => this.effectiveDeadline(irq) ?? Number.POSITIVE_INFINITY,
+        (recipient) => this.weightOf(recipient),
+      ),
+    );
     const throttled: Irq[] = [];
     for (const irq of this.bottom) {
       // 截止时间到期后不再节流，立即补发（仍计入预算消耗）
@@ -83,6 +165,7 @@ export class BudgetQoSScheduler implements Scheduler {
     }
     this.bottom.length = 0;
     this.bottom.push(...throttled);
+    this.persistState();
     return messages;
   }
 }

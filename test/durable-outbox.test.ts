@@ -8,6 +8,9 @@ import type { DeliveryRecord, DomainEvent, Message } from '../src/domain.js';
 import type { SendResult } from '../src/ports.js';
 import { RecordingChannel, createHarness } from './harness.js';
 import type { Report } from '../src/domain.js';
+import { AttentionMetrics } from '../src/metrics.js';
+import { AttentionViews } from '../src/views.js';
+import type { BudgetQoSConfig } from '../src/scheduler.js';
 
 type Fault = 'waiting' | 'gone' | 'throw';
 
@@ -351,5 +354,37 @@ describe('DurableOutbox via runtime harness', () => {
     });
     restarted.drain(h.clock.now());
     expect(h.channel.sent()).toHaveLength(1);
+  });
+
+  const ample: BudgetQoSConfig = { windowMs: 60_000, maxInterrupts: 100, maxCost: 1000 };
+
+  it('DurableOutbox 与 AttentionMetrics 组合：退避重试成功后仍记录度量', () => {
+    const channel = new ControllableChannel();
+    const h = createHarness({
+      channel,
+      outbox: (d) => new DurableOutbox({ ...d, metrics: new AttentionMetrics(d) }),
+    });
+    channel.failNext('waiting', 'waiting');
+    h.report(report({ value: 5, cost: 2 }));
+    expect(channel.sent()).toHaveLength(0);
+    expect(new AttentionViews(h.persistence, ample).panel(0).totals).toEqual({ count: 0, cost: 0, value: 0 });
+
+    h.advance(1000);
+    expect(channel.sent()).toHaveLength(0);
+    h.advance(2000);
+    expect(channel.sent()).toHaveLength(1);
+    const panel = new AttentionViews(h.persistence, ample).panel(h.clock.now());
+    expect(panel.totals).toEqual({ count: 1, cost: 2, value: 5 });
+    expect(panel.deliveries[0]!.at).toBe(3000);
+  });
+
+  it('默认即时 Outbox 送达失败（waiting）时不计入注意力度量', () => {
+    const channel = new ControllableChannel();
+    const h = createHarness({ channel, metrics: (d) => new AttentionMetrics(d) });
+    channel.failNext('waiting');
+    h.report(report({ value: 5, cost: 2 }));
+    expect(channel.attempts()).toBe(1);
+    const panel = new AttentionViews(h.persistence, ample).panel(0);
+    expect(panel.totals).toEqual({ count: 0, cost: 0, value: 0 });
   });
 });
