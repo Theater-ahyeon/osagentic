@@ -1,14 +1,20 @@
 import type { AttentionFeedback, Metrics, Persistence, RecipientFeedback } from './ports.js';
-import type { Irq, Message, Recipient } from './domain.js';
+import type { DeliveryMetric, Irq, Message, Recipient } from './domain.js';
 
-// 单次送达的注意力度量：成本与价值来自 irq.created 事件，at 为打断时机
-export interface DeliveryMetric {
-  messageId: string;
-  recipient: Recipient;
-  at: number;
-  cost: number;
-  value: number;
-  irqIds: string[];
+// 从事件日志建立 irq id → 中断索引（度量、replay、评测共用）
+export function irqIndexOf(persistence: Persistence): Map<string, Irq> {
+  const index = new Map<string, Irq>();
+  for (const event of persistence.log()) {
+    if (event.type === 'irq.created') index.set(event.payload.id, event.payload);
+  }
+  return index;
+}
+
+// 索引中查找中断身份；缺失 irq.created 事件时就地崩溃
+export function irqOf(index: Map<string, Irq>, id: string): Irq {
+  const irq = index.get(id);
+  if (!irq) throw new Error(`missing irq.created event for ${id}`);
+  return irq;
 }
 
 // 接收人累计度量
@@ -47,8 +53,7 @@ export class AttentionMetrics implements Metrics, AttentionFeedback {
     let cost = 0;
     let value = 0;
     for (const id of message.irqIds) {
-      const irq = this.irqIndex.get(id);
-      if (!irq) throw new Error(`missing irq.created event for ${id}`);
+      const irq = irqOf(this.irqIndex, id);
       cost += irq.cost;
       value += irq.value;
     }
@@ -79,8 +84,7 @@ export class AttentionMetrics implements Metrics, AttentionFeedback {
     for (let i = this.scanned; i < events.length; i++) {
       const event = events[i]!;
       if (event.type === 'irq.created') {
-        const irq = event.payload as Irq;
-        this.irqIndex.set(irq.id, irq);
+        this.irqIndex.set(event.payload.id, event.payload);
       }
     }
     this.scanned = events.length;

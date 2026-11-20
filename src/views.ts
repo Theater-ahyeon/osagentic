@@ -1,10 +1,9 @@
 import type { Persistence } from './ports.js';
-import type { Recipient } from './domain.js';
+import type { DeliveryMetric, Recipient } from './domain.js';
 import type { BudgetQoSConfig } from './scheduler.js';
 import {
   METRICS_DELIVERIES_KEY,
   METRICS_RECIPIENTS_KEY,
-  type DeliveryMetric,
   type RecipientMetrics,
 } from './metrics.js';
 import { OBS_QUEUE_DEPTH_KEY, OBS_COALESCED_KEY, OBS_THROTTLED_KEY } from './observability.js';

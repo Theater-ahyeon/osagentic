@@ -2,6 +2,7 @@ import type { Persistence } from './ports.js';
 import type { DeliveryPurpose, Irq, Message, Report } from './domain.js';
 import type { ManualClock } from './clock.js';
 import type { Runtime } from './runtime.js';
+import { irqIndexOf, irqOf } from './metrics.js';
 
 // 送达流快照：去掉过程生成的 id，保留接收人外部可见的内容、时机与成员中断身份。
 // interrupts 用 irq.created 事件中的稳定身份（ticket/kind/创建时刻），跨运行可比较。
@@ -19,18 +20,6 @@ function irqIdentity(irq: Irq): string {
   return `${irq.ticketId}/${irq.kind}@${irq.createdAt}`;
 }
 
-// 从事件日志建立 irq id → 稳定身份索引
-function irqIndexOf(persistence: Persistence): Map<string, Irq> {
-  const index = new Map<string, Irq>();
-  for (const event of persistence.log()) {
-    if (event.type === 'irq.created') {
-      const irq = event.payload as Irq;
-      index.set(irq.id, irq);
-    }
-  }
-  return index;
-}
-
 function snapshotOf(message: Message, at: number, index: Map<string, Irq>): DeliverySnapshot {
   return {
     recipient: message.recipient,
@@ -39,11 +28,7 @@ function snapshotOf(message: Message, at: number, index: Map<string, Irq>): Deli
     text: message.text,
     links: [...message.links],
     at,
-    interrupts: message.irqIds.map((id) => {
-      const irq = index.get(id);
-      if (!irq) throw new Error(`missing irq.created event for ${id}`);
-      return irqIdentity(irq);
-    }),
+    interrupts: message.irqIds.map((id) => irqIdentity(irqOf(index, id))),
   };
 }
 
@@ -53,7 +38,7 @@ export function deliveryStreamOf(persistence: Persistence): DeliverySnapshot[] {
   const stream: DeliverySnapshot[] = [];
   for (const event of persistence.log()) {
     if (event.type !== 'delivery.sent') continue;
-    const record = event.payload as { message: Message; status: string; sentAt?: number };
+    const record = event.payload;
     if (record.status !== 'sent') continue;
     stream.push(snapshotOf(record.message, record.sentAt ?? record.message.createdAt, index));
   }

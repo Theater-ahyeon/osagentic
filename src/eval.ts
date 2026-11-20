@@ -1,9 +1,9 @@
-import type { Report, ReportKind, Irq, Message } from './domain.js';
+import type { Report, ReportKind, Irq, Message, DeliveryMetric } from './domain.js';
 import type { Channel, Metrics, Persistence, Scheduler } from './ports.js';
 import type { ManualClock } from './clock.js';
 import type { PauseState } from './pause.js';
 import type { Runtime } from './runtime.js';
-import { AttentionMetrics, type DeliveryMetric } from './metrics.js';
+import { AttentionMetrics, irqIndexOf } from './metrics.js';
 import { AttentionViews, type AttentionPanel } from './views.js';
 import { BudgetQoSScheduler, type BudgetQoSConfig } from './scheduler.js';
 import { CoalescingScheduler, type CoalesceConfig } from './coalesce.js';
@@ -168,14 +168,12 @@ function meanInterInterruptMs(deliveries: DeliveryMetric[]): number {
 
 // 从持久事件与 T5 读视图计算度量
 function evaluate(persistence: Persistence, panel: AttentionPanel): EvalMetrics {
-  const irqs: Irq[] = [];
+  const irqs = Array.from(irqIndexOf(persistence).values());
   // 每个中断的首次送达时刻（合并摘要的成员共享同一送达时刻）
   const deliveredAt = new Map<string, number>();
   for (const event of persistence.log()) {
-    if (event.type === 'irq.created') {
-      irqs.push(event.payload as Irq);
-    } else if (event.type === 'irq.delivered') {
-      const metric = event.payload as DeliveryMetric;
+    if (event.type === 'irq.delivered') {
+      const metric: DeliveryMetric = event.payload;
       for (const id of metric.irqIds) {
         if (!deliveredAt.has(id)) deliveredAt.set(id, metric.at);
       }

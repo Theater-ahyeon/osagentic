@@ -57,11 +57,29 @@ export interface DeliveryRecord {
   sentAt?: number;
 }
 
-export interface DomainEvent {
-  type: string;
+// 单次送达的注意力度量：成本与价值来自 irq.created 事件，at 为打断时机
+export interface DeliveryMetric {
+  messageId: string;
+  recipient: Recipient;
   at: number;
-  payload: unknown;
+  cost: number;
+  value: number;
+  irqIds: string[];
 }
+
+// 合并摘要送达事件载荷
+export interface CoalescedDelivery {
+  messageId: string;
+  irqIds: string[];
+}
+
+// 领域事件判别联合：消费端按 type 收窄载荷，无需 cast
+export type DomainEvent =
+  | { type: 'irq.created'; at: number; payload: Irq }
+  | { type: 'delivery.enqueued'; at: number; payload: DeliveryRecord }
+  | { type: 'delivery.sent'; at: number; payload: DeliveryRecord }
+  | { type: 'irq.delivered'; at: number; payload: DeliveryMetric }
+  | { type: 'delivery.coalesced'; at: number; payload: CoalescedDelivery };
 
 // blocked/failed 等待人工输入，恒为上半部：立即送达，不可节流、不可合并
 export function classify(report: Report): IrqHalf {
