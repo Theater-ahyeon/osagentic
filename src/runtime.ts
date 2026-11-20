@@ -1,11 +1,13 @@
 import type { Clock, Channel, Persistence, Scheduler, Outbox, Metrics } from './ports.js';
 import type { DeliveryRecord, Irq, Message, Report } from './domain.js';
 import { toIrq, messageOf } from './domain.js';
+import { PauseState } from './pause.js';
 
 export interface RuntimeDeps {
   clock: Clock;
   channel: Channel;
   persistence: Persistence;
+  pause?: PauseState;
   scheduler?: Scheduler;
   outbox?: Outbox;
   metrics?: Metrics;
@@ -53,12 +55,14 @@ class SimpleOutbox implements Outbox {
 export class Runtime {
   private readonly clock: Clock;
   private readonly persistence: Persistence;
+  private readonly pauseState: PauseState;
   private readonly scheduler: Scheduler;
   private readonly outbox: Outbox;
 
   constructor(deps: RuntimeDeps) {
     this.clock = deps.clock;
     this.persistence = deps.persistence;
+    this.pauseState = deps.pause ?? new PauseState();
     const metrics = deps.metrics ?? new NoopMetrics();
     this.scheduler = deps.scheduler ?? new ImmediateScheduler();
     this.outbox = deps.outbox ?? new SimpleOutbox(deps.channel, deps.persistence, metrics, deps.clock);
@@ -74,11 +78,25 @@ export class Runtime {
   }
 
   flush(): void {
+    if (this.pauseState.isPaused()) return;
     const now = this.clock.now();
     for (const message of this.scheduler.due(now)) {
       this.outbox.enqueue(message);
     }
     this.outbox.drain(now);
+  }
+
+  pause(): void {
+    this.pauseState.pause(this.clock.now());
+  }
+
+  resume(): void {
+    this.pauseState.resume(this.clock.now());
+    this.flush();
+  }
+
+  isPaused(): boolean {
+    return this.pauseState.isPaused();
   }
 }
 
